@@ -1,0 +1,845 @@
+<script lang="ts">
+    import { onMount, onDestroy } from "svelte";
+    import faviconURL from "./favicon.svg";
+    import { HideCursorHandler } from "$lib/hide-cursor-handler.js";
+    import { ScreenWakeLock } from "$lib/screen-wake-lock.js";
+    import { range } from "$lib/range.js";
+    import { getRandomInt } from "$lib/get-random-int.js";
+    import { debounce } from "$lib/debounce.js";
+    import { createNamedLogger } from "$lib/create-named-logger.js";
+    import { CellsState } from "./worker.js";
+
+    import type { WorkerInitData, MessageForm } from "./types.js";
+
+
+    const cellevoLog = createNamedLogger("CELLEVO");
+    const edgesBorderWidth: number = 1;
+    const edgesBorderPadding: number = 6;
+    let cellsState: CellsState;
+    let cellBitmap: Array<Array<number>> | null = null;
+    let cellSize: number | null = null;
+    let aliveCellsCount: number = 0;
+    let rules = { b: [3], s: [2, 3] };
+    let density: "L" | "M" | "H" | "U" = "M";
+
+    let innerWidth: number;
+    let showCanvas: boolean = false;
+
+    let mainLoopRunning: boolean = false;
+    let frequency: number = 1;
+
+    // TODO: These are for reactive UI.
+    // After migrating to Svelte 5, it should be possible by doing $state(new CellsState()),
+    // to use properties of that instance for reactive UI.
+    let _xLen: number = 0;
+    let _yLen: number = 0;
+
+
+    // "-1" to ideally prevent spawning last worker in same thread as main.., 4 as universal for Apple...? (navigator.hardwareConcurrency not available on Apple).
+    const threadsN: number = (navigator?.hardwareConcurrency >= 2 ? navigator.hardwareConcurrency : 4) - 1;
+
+    const workersController = {
+        count: <number> threadsN,
+        pool: <Array<Worker>> [],
+        waiting: <number> threadsN,
+        listenersAC: <AbortController> new AbortController(),
+
+        post(specificWorker: number, ...args: Array<unknown>): void {
+            if (specificWorker > -1 && specificWorker < this.count) {
+                this.pool[specificWorker].postMessage(...args as [unknown]);
+                this.waiting--;
+            } else {
+                for (let i = 0; i < this.count; i++) {
+                    this.pool[i].postMessage(...args as [unknown]);
+                    this.waiting--;
+                }
+            }
+        },
+
+        relay(ev: MessageEvent<MessageForm>): void {
+            switch (ev.data.type) {
+                case "<WAITING-AFTER>":
+                    this.waiting++;
+
+                    if (this.waiting === this.count) {
+                        switch (ev.data.input) {
+                            case "<EVOLVE>":
+                                cellsState.switchIndication();
+                            case "<INIT>":
+                            case "<RANDOM>":
+                            case "<CLEAR>":
+                                this.post(-1, { type: "<RENDER>" });
+                                break;
+                            case "<RENDER>":
+                            case "<CHANGE-RULES>":
+                                loop.continue();
+                        }
+                    }
+
+                    break;
+                case "<ERROR>":
+                    cellevoLog("error", ev.data.input);
+                    break;
+                default:
+                    cellevoLog("error", `received unknown type of message from worker: ${JSON.stringify(ev.data)}`);
+            }
+        },
+
+        terminate(): void {
+            this.listenersAC.abort();
+
+            for (let i = 0; i < this.count; i++) {
+                this.pool[i].terminate();
+            }
+        }
+    };
+
+    for (let i = 0; i < workersController.count; i++) {
+        const worker: Worker = new Worker(new URL("./worker.ts", import.meta.url), {  type: "module" });
+
+        worker.addEventListener("error", (ev: ErrorEvent): void => cellevoLog("error", `worker[${i}/${workersController.count}] failure | ${ev.message}`), { signal: workersController.listenersAC.signal });
+        worker.addEventListener("message", (ev: MessageEvent): void => workersController.relay(ev), { signal: workersController.listenersAC.signal });
+        workersController.pool[i] = worker;
+    }
+
+
+    function initBackground(canvas: HTMLCanvasElement | null, canvasWidth: number, canvasHeight: number): void {
+        if (!canvas) {
+            cellevoLog("error", "failed to initialize matrix | invalid canvas element");
+            return;
+        }
+
+        const ctx: CanvasRenderingContext2D = canvas.getContext("2d") as CanvasRenderingContext2D;
+        const edgeBorderLen: number = Math.round((canvasWidth < canvasHeight ? canvasWidth : canvasHeight) * 0.4);
+
+        canvas.width = canvasWidth + edgesBorderWidth + edgesBorderPadding;
+        canvas.height = canvasHeight + edgesBorderWidth + edgesBorderPadding;
+        ctx.lineWidth = edgesBorderWidth;
+
+        const edgesCoordinates = [
+            [[0, 0], [0, edgeBorderLen], [edgeBorderLen, 0]],
+            [[0, canvas.height], [0, canvas.height - edgeBorderLen], [edgeBorderLen, canvas.height]],
+            [[canvas.width, canvas.height], [canvas.width - edgeBorderLen, canvas.height], [canvas.width, canvas.height - edgeBorderLen]],
+            [[canvas.width, 0], [canvas.width - edgeBorderLen, 0], [canvas.width, edgeBorderLen]]
+        ];
+
+        for (const edge of edgesCoordinates) {
+            const [x0, y0] = edge[0];
+            const drawLine = (x: number, y: number): void => {
+                const gradient: CanvasGradient = ctx.createLinearGradient(x0, y0, x, y);
+
+                gradient.addColorStop(0.1, "#ff79316d");
+                gradient.addColorStop(1, "#00000000");
+                ctx.strokeStyle = gradient;
+
+                ctx.beginPath();
+                ctx.moveTo(x0, y0);
+                ctx.lineTo(x, y);
+                ctx.stroke();
+            }
+
+            drawLine(edge[1][0], edge[1][1]);
+            drawLine(edge[2][0], edge[2][1]);
+        }
+    }
+
+
+    function initMatrix(node: HTMLElement): void {
+        if (!node.parentElement) {
+            cellevoLog("error", "failed to initialize matrix | invalid state");
+            return;
+        }
+
+        cellBitmap =
+            density === "U" ? [
+                [255]
+            ] :
+            density === "H" ? [
+                [128,255,128],
+                [255,255,255],
+                [128,255,128]
+            ] :
+            density === "M" ? [
+                [22 ,86 ,127,86 ,42 ],
+                [86 ,255,255,255,86 ],
+                [127,255,255,255,127],
+                [86 ,255,255,255,86 ],
+                [22 ,86 ,127,86 ,22 ]
+            ] :
+            [
+                [0  ,0  ,0  ,0  ,0  ,0  ,0  ,0  ,0  ],
+                [0  ,0  ,0  ,86 ,127,86 ,0  ,0  ,0  ],
+                [0  ,0  ,127,255,255,255,127,0  ,0  ],
+                [0  ,86 ,255,255,255,255,255,86 ,0  ],
+                [0  ,127,255,255,255,255,255,127,0  ],
+                [0  ,86 ,255,255,255,255,255,86 ,0  ],
+                [0  ,0  ,127,255,255,255,127,0  ,0  ],
+                [0  ,0  ,0  ,86 ,127,86 ,0  ,0  ,0  ],
+                [0  ,0  ,0  ,0  ,0  ,0  ,0  ,0  ,0  ]
+            ];
+
+        cellSize = cellBitmap.length;
+
+        const xLen: number = Math.trunc((node.parentElement.offsetWidth - edgesBorderWidth - edgesBorderPadding - 2) / cellSize);
+        const yLen: number = Math.trunc((node.parentElement.offsetHeight - edgesBorderWidth - edgesBorderPadding - 2) / cellSize);
+
+        cellsState = new CellsState(xLen, yLen);
+        _xLen = xLen;
+        _yLen = yLen;
+
+        const canvasWidth: number = xLen * cellSize;
+        const canvasHeight: number = yLen * cellSize;
+
+        initBackground(node.previousElementSibling as HTMLCanvasElement, canvasWidth, canvasHeight);
+
+        const cellImageDataArray: Uint8ClampedArray = new Uint8ClampedArray(cellSize * cellSize * 4);
+
+        for (let i = 0; i < cellImageDataArray.length; i += 4) {
+            const x: number = (i / 4) % cellSize;
+            const y: number = Math.floor(i / (4 * cellSize));
+
+            if (cellBitmap[y][x] > 0) {
+                cellImageDataArray[i] = 255;
+                cellImageDataArray[i + 1] = 121;
+                cellImageDataArray[i + 2] = 49;
+                cellImageDataArray[i + 3] = cellBitmap[y][x];
+            }
+        }
+
+        let arrayScopePool: number = 0;
+        for (let i = 0; i < workersController.count; i++) {
+            const matrixCanvas: HTMLCanvasElement = node.children[i] as HTMLCanvasElement;
+            const offscreen: OffscreenCanvas = matrixCanvas.transferControlToOffscreen();
+            const arrayScopeYLen: number = Math.floor(yLen / workersController.count) + (i < yLen % workersController.count ? 1 : 0);
+
+            const data: WorkerInitData = {
+                type: "<INIT>",
+                input: {
+                    xLen,
+                    yLen,
+                    cellSize,
+                    rules,
+                    sharedBuffer: cellsState.sharedBuffer,
+                    offscreen,
+                    arrayScopeOffsetStart: arrayScopePool,
+                    arrayScopeOffsetEnd: arrayScopePool += (arrayScopeYLen * xLen),
+                    canvasWidth,
+                    canvasScopeHeight: arrayScopeYLen * cellSize,
+                    cellImageDataArray
+                }
+            };
+
+            workersController.post(i, data, [offscreen]);
+        }
+    }
+
+
+    function updateAliveCellsCount(): void {
+        let aliveN: number = 0;
+
+        for (const cell of cellsState.getCurrent()) {
+            if (cell === 1) {
+                aliveN++;
+            }
+        }
+
+        aliveCellsCount = aliveN;
+    }
+
+
+    const showCanvasAction = (node: HTMLElement) => {
+        try {
+            initMatrix(node);
+        } catch (err) {
+            cellevoLog("error", `failed to initialize matrix | ${err}`);
+        }
+    };
+
+
+    let hideCursorHandler: HideCursorHandler | null = null;
+    const switchEffect: ReturnType<typeof debounce> = debounce(async () => {
+        if (mainLoopRunning) {
+            await ScreenWakeLock.request();
+
+            if (hideCursorHandler === null) {
+                hideCursorHandler = new HideCursorHandler(document.body);
+            }
+        } else {
+            await ScreenWakeLock.release();
+
+            if (hideCursorHandler !== null) {
+                hideCursorHandler.remove();
+                hideCursorHandler = null;
+            }
+        }
+    }, 1800);
+
+
+    const loop = {
+        timer: <number | null> null,
+        lastLoopRunTime: <number | null> null,
+
+        run(): void {
+            if (mainLoopRunning) {
+                this.lastLoopRunTime = performance.now();
+                workersController.post(-1, { type: "<EVOLVE>" });
+            }
+        },
+
+        switch(): void {
+            mainLoopRunning = !mainLoopRunning;
+
+            this.run();
+
+            if (!mainLoopRunning) updateAliveCellsCount();
+
+            switchEffect.execute();
+        },
+
+        continue(): void {
+            if (mainLoopRunning) {
+                const timeDeltaFromLast: number = performance.now() - (this.lastLoopRunTime as number);
+                const timeMS: number = (1000 / frequency) - timeDeltaFromLast;
+
+                if (this.timer) clearTimeout(this.timer); // Fixes bug that appear when fast switching (this.switch) occurs, i.e. now only one timer at time can run.
+                this.timer = setTimeout((): void => this.run(), timeMS > 0 ? timeMS : 0);
+            } else {
+                updateAliveCellsCount();
+            }
+        }
+    };
+
+
+    const frequencyController = {
+        max: <number> 300,
+        buttonHzIsDown: <boolean> false,
+        buttonHzIsDownLongTimer: <number | null> null,
+        bigIncrementSize: <number> 30,
+
+        change(increment: boolean): void {
+            const performChange = (increment: boolean, longPress?: boolean) => {
+                if (increment && frequency < this.max) {
+                    frequency++;
+                } else if (frequency !== 1) {
+                    frequency--;
+                }
+
+                if (this.buttonHzIsDown && longPress && frequency !== 1 && frequency !== this.max) {
+                    setTimeout((): void => performChange(increment, longPress), 70);
+                }
+
+                loop.run();
+            };
+
+            this.buttonHzIsDown = true;
+            performChange(increment);
+
+            if (frequency !== 1 && frequency !== this.max) {
+                this.buttonHzIsDownLongTimer = setTimeout((): void => performChange(increment, true), 460);
+            }
+
+            document.body.addEventListener("mouseup", (): void => {
+                if (this.buttonHzIsDownLongTimer) clearTimeout(this.buttonHzIsDownLongTimer);
+                this.buttonHzIsDown = false;
+            }, { once: true });
+        },
+
+        bigIncrement(): void {
+            if (frequency < this.max - this.bigIncrementSize) {
+                if (frequency === 1) {
+                    frequency += this.bigIncrementSize - 1;
+                } else {
+                    frequency += this.bigIncrementSize;
+                }
+            } else if (frequency !== this.max) {
+                frequency = this.max;
+            } else {
+                frequency = 1;
+            }
+
+            loop.run();
+        }
+    };
+
+
+    function changeRules(bs: string, num: number): void {
+        if (bs === "b") {
+            if (rules.b.includes(num)) {
+                rules.b = rules.b.filter((e) => e !== num);
+            } else {
+                rules.b = [...rules.b, num];
+            }
+        } else if (bs === "s") {
+            if (rules.s.includes(num)) {
+                rules.s = rules.s.filter((e) => e !== num);
+            } else {
+                rules.s = [...rules.s, num];
+            }
+        }
+
+        workersController.post(-1, { type: "<CHANGE-RULES>", input: { rules } });
+    }
+
+
+    function switchCell(event: MouseEvent): void {
+        if (!event.currentTarget || !cellsState.xLen || !cellsState.yLen || !cellSize) {
+            cellevoLog("error", "failed to switch cell | invalid state");
+            return;
+        }
+
+        const target: HTMLElement = event.currentTarget as HTMLElement;
+        const rect: DOMRect = target.getBoundingClientRect();
+        const mouseX: number = event.clientX - rect.left;
+        const mouseY: number = event.clientY - rect.top;
+
+        const caclulatedColumn: number = Math.floor(mouseX / cellSize);
+        const caclulatedRow: number = Math.floor(mouseY / cellSize);
+
+        const column: number | null = (caclulatedColumn >= 0) && (caclulatedColumn <= cellsState.xLen - 1) ? caclulatedColumn : null;
+        const row: number | null = (caclulatedRow >= 0) && (caclulatedRow <= cellsState.yLen - 1) ? caclulatedRow : null;
+
+        if ((column === null) || (row === null)) return;
+
+        const index: number = row * cellsState.xLen + column;
+        const currentState: Uint8Array = cellsState.getCurrent();
+
+        currentState[index] = currentState[index] === 0 ? 1 :  0;
+
+        workersController.post(-1, { type: "<RENDER>" });
+    }
+
+
+    function setDensity(level: "L" | "M" | "H" | "U"): void {
+        if (level !== density) {
+            density = level;
+            resizeHandler();
+        }
+    }
+
+
+    function random(): void {
+        const numOfPasses: number = getRandomInt(1, 8);
+
+        if (workersController.count >= numOfPasses) {
+            for (let i = 0; i < numOfPasses; i++) {
+                workersController.post(i, { type: "<RANDOM>", input: 1 });
+            }
+        } else {
+            workersController.post(-1, { type: "<RANDOM>", input: Math.floor(numOfPasses / workersController.count) });
+        }
+    }
+
+
+    const debouncedShowCanvas: ReturnType<typeof debounce> = debounce((): boolean => showCanvas = true, 400);
+
+    function resizeHandler(): void {
+        if (showCanvas) {
+            showCanvas = false;
+        }
+
+        if (mainLoopRunning) {
+            loop.switch();
+        }
+
+        debouncedShowCanvas.execute();
+    }
+
+    function keyHandler(ev: KeyboardEvent): void {
+        switch (ev.key) {
+            case " ":
+                loop.switch();
+                break;
+            case "r":
+                random();
+                break;
+            case "c":
+                workersController.post(-1, { type: "<CLEAR>" });
+                break;
+            case "f":
+                frequencyController.bigIncrement();
+        }
+
+        for (let i = 0; i <= 8; i++) {
+            if (ev.key === i.toString()) {
+                !ev.altKey ? changeRules("b", i) : changeRules("s", i);
+            }
+        }
+    }
+
+	onMount((): void => {
+        if (innerWidth) {
+            density = innerWidth > 640 ? "M" : "H";
+        }
+
+        showCanvas = true;
+	});
+
+
+    onDestroy(async (): Promise<void> => {
+        if (loop.timer) clearTimeout(loop.timer);
+        workersController.terminate();
+        switchEffect.clear();
+        debouncedShowCanvas.clear();
+
+        if (hideCursorHandler !== null) {
+            hideCursorHandler.remove();
+        }
+
+        await ScreenWakeLock.release();
+    });
+</script>
+
+
+<svelte:head>
+    <title>Cellevo</title>
+    <link rel="icon" type="image/svg+xml" href={faviconURL}/>
+    <meta name="description" content="CA, GOL">
+    <meta name="keywords" content="cellevo, celluar automata, project">
+</svelte:head>
+
+<svelte:window on:resize={resizeHandler} bind:innerWidth/>
+
+<svelte:document on:fullscreenchange={resizeHandler} on:keydown={keyHandler}/>
+
+
+<article class="po-ab fl-ce">
+    <h1 style="display: none;">Cellevo</h1>
+    <div id="stats" class="light" class:invis={mainLoopRunning || !showCanvas} title={`${aliveCellsCount} Alive Cell${aliveCellsCount !== 1 ? "s" : ""} out of ${_xLen * _yLen} (${_xLen} x ${_yLen})`}>
+        <span>{aliveCellsCount}</span>
+        <span>:</span>
+        <span>{_xLen * _yLen}</span>
+    </div>
+    <div id="matrix-render">
+        {#if showCanvas}
+            <canvas></canvas>
+            <div use:showCanvasAction on:mousedown={(ev) => switchCell(ev)} role="gridcell" tabindex="-1">
+                {#each workersController.pool as _}
+                    <canvas></canvas>
+                {/each}
+            </div>
+        {/if}
+    </div>
+    <div id="controll">
+        <div id="input-field">
+            <div>
+                <div title="Born Rules">
+                    <span class="light symbol">B</span>
+                    {#each range(0, 8) as i}
+                        <button type="button" on:mousedown={() => changeRules("b", i)} class:active-button={rules.b.includes(i)} tabindex="-1">
+                            {i}
+                        </button>
+                    {/each}
+                </div>
+                <div title="Survive Rules">
+                    <span class="light symbol">S</span>
+                    {#each range(0, 8) as i}
+                        <button type="button" on:mousedown={() => changeRules("s", i)} class:active-button={rules.s.includes(i)} tabindex="-1">
+                            {i}
+                        </button>
+                    {/each}
+                </div>
+            </div>
+            <div>
+                <div class="light" title="Frequency">
+                    <button on:mousedown={() => frequencyController.bigIncrement()} class="light symbol" tabindex="-1">f</button>
+                    <button type="button" on:mousedown={() => frequencyController.change(false)} disabled={frequency <= 1} tabindex="-1">«</button>
+                    <span id="hz-indication">
+                        <span>{frequency}</span>
+                        <span>Hz</span>
+                    </span>
+                    <button type="button" on:mousedown={() => frequencyController.change(true)} disabled={frequency >= frequencyController.max} tabindex="-1">»</button>
+                </div>
+                <div title="Density: Low | Middle | High | Ultra">
+                    <span class="light symbol">ρ</span>
+                    <button type="button" on:mousedown={() => setDensity("L")} class:active-button={density === "L"} tabindex="-1">L</button>
+                    <span>|</span>
+                    <button type="button" on:mousedown={() => setDensity("M")} class:active-button={density === "M"} tabindex="-1">M</button>
+                    <span>|</span>
+                    <button type="button" on:mousedown={() => setDensity("H")} class:active-button={density === "H"} tabindex="-1">H</button>
+                    <span>|</span>
+                    <button type="button" on:mousedown={() => setDensity("U")} class:active-button={density === "U"} tabindex="-1">U</button>
+                </div>
+            </div>
+            <div>
+                <div title="Switch Iteration Status">
+                    <button type="button" on:mousedown={() => loop.switch()} class:active-button={mainLoopRunning} tabindex="-1">ON</button>
+                    <span>|</span>
+                    <button type="button" on:mousedown={() => loop.switch()} class:active-button={!mainLoopRunning} tabindex="-1">OFF</button>
+                </div>
+                <button type="button" on:mousedown={random} class="light" tabindex="-1" title="Randomly Switch Cells Status">
+                    random
+                </button>
+                <button type="button" on:mousedown={() => workersController.post(-1, { type: "<CLEAR>" })} class="light" tabindex="-1" title="Clear Alive Cells">
+                    clear
+                </button>
+            </div>
+        </div>
+    </div>
+</article>
+
+
+<style lang="scss">
+    @use "sass:color";
+
+    $color-primary: #ff7931; // rgb(255, 121, 49)
+    $color-tertiary: color.change($color-primary, $alpha: 0.4);
+
+    *, *::before, *::after {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+        line-height: 1.4em;
+        letter-spacing: 0.04em;
+    }
+
+    button {
+        font-family: inherit;
+        font-size: inherit;
+        color: inherit;
+        font-weight: inherit;
+        cursor: pointer;
+    }
+
+    ::placeholder {
+        opacity: 0.8;
+        font-style: italic;
+    }
+
+    .invis {
+        opacity: 0;
+        transition: 0.2s !important;
+        pointer-events: none;
+    }
+
+    @font-face {
+        font-family: "FiraMono";
+        src: url("/FiraMono-Regular.ttf");
+    }
+
+    article {
+        font-family: "FiraMono", monospace;
+        font-size: clamp(1rem, calc(1rem + 0.32vw), 1.6rem);
+        user-select: none;
+        background-color: #000;
+        padding: 0.2em 0.6em;
+        min-height: 15em;
+    }
+
+    .po-ab {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        right: 0;
+    }
+
+    .fl-ce {
+        display: flex;
+        flex-flow: column nowrap;
+        justify-content: center;
+        align-items: center;
+    }
+
+    #stats {
+        display: flex;
+        flex-direction: row nowrap;
+        gap: 0.3em;
+        font-size: 0.6em;
+        font-weight: 900;
+        filter: opacity(0.5) grayscale(0.3);
+        text-align: center;
+        margin-bottom: 0.2em;
+        transition: 2.2s;
+
+        span {
+            &:first-of-type {
+                text-align: right;
+                width: 30vw;
+                // margin: 0 0 0 auto;
+            }
+
+            &:last-of-type {
+                text-align: left;
+                width: 30vw;
+                // margin: 0 auto 0 0;
+            }
+        }
+    }
+
+    #matrix-render {
+        width: 100%;
+        height: 100%;
+        position: relative;
+        transition: 0.2s background-color ease-out;
+        filter: drop-shadow(0 0 0.3em $color-primary);
+        overflow: hidden;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+
+        canvas {
+            animation: canvas-fade-in 1s ease-out forwards 0.1s;
+            transition: 0.4s ease-out;
+            filter: opacity(0) grayscale(0.3);
+        }
+
+        & > canvas {
+            position: absolute;
+        }
+
+        & > div {
+            display: flex;
+            flex-flow: column nowrap;
+        }
+
+        &:not(:has(canvas)) {
+            transition: 0.12s ease-out;
+            background-color: color.change($color-primary, $alpha: 0.06);
+        }
+    }
+
+    @keyframes canvas-fade-in {
+        to {
+            filter: opacity(1) grayscale(0);
+        }
+    }
+
+    #controll {
+        display: flex;
+        flex-flow: column nowrap;
+        justify-content: center;
+        align-items: center;
+        gap: 0.7em;
+        font-size: 0.8em;
+        font-weight: 600;
+        transition: 8s filter ease-out 8s;
+        margin: 0 auto;
+        padding: 0.5em 1em 0.5em 1em;
+        filter: opacity(0.5) grayscale(0.2);
+
+        &:active {
+            filter: opacity(1) grayscale(0);
+            transition: 0.1s filter;
+        }
+    }
+
+    #input-field {
+        display: flex;
+        flex-flow: column nowrap;
+        justify-content: center;
+        gap: 0.33em;
+        color: $color-tertiary;
+
+        > div {
+            width: 100%;
+            display: flex;
+            flex-flow: row nowrap;
+            align-items: center;
+            justify-content: center;
+            gap: 1.8em;
+            // height: 1em;
+
+            &:nth-child(1) { // B and S parameters row
+                button {
+                    &:not(&:last-of-type) {
+                        margin-right: 0.5em;
+                    }
+
+                    &.active-button {
+                        cursor: pointer;
+                        pointer-events: all;
+                    }
+                }
+            }
+
+            &:nth-child(2) { // frequency row
+                span {
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    gap: 0.12em;
+                    transition: 0.1s ease-out;
+                }
+
+                #hz-indication {
+                    width: 3.2em;
+                }
+            }
+
+            > div {
+                display: flex;
+                flex-flow: row nowrap;
+                justify-content: center;
+                align-items: center;
+                gap: 0.2em;
+            }
+        }
+
+        button {
+            background: none;
+            border: none;
+            transition: 0.3s ease-out;
+
+            &:active {
+                transition: 0.1s ease-out;
+                text-shadow: 0 0 0.42em $color-primary, 0 0 0.42em $color-primary;
+            }
+        }
+    }
+
+    .light {
+        color: $color-primary;
+        text-shadow: 0 0 0.12em $color-primary;
+    }
+
+    .active-button {
+        color: $color-primary;
+        text-shadow: 0 0 0.32em $color-primary;
+        cursor: default;
+        pointer-events: none;
+    }
+
+    button:disabled {
+        color: $color-tertiary;
+        cursor: default;
+        pointer-events: none;
+    }
+
+    .symbol {
+        font-style: italic;
+        margin-right: 0.8em;
+    }
+
+    @media only screen and (max-width: 640px) {
+        article {
+            padding: 0.3em 0.6em;
+        }
+
+        #stats {
+            margin: 0 auto 0.3em;
+        }
+
+        #controll {
+            padding: 0.3em 0.2em;
+        }
+
+        #input-field {
+            font-size: 1.28em;
+            padding: 0.3em 0;
+            gap: 0.72em;
+
+            & > div {
+                gap: 1em;
+
+                &:nth-child(1) { // B and S parameters row
+                    flex-flow: column nowrap;
+                    gap: 0.5em;
+                }
+
+                & > div {
+                    gap: 0.1em;
+                }
+            }
+        }
+    }
+</style>
