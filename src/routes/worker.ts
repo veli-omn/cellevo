@@ -1,8 +1,9 @@
-import { getRandomBit } from "$lib/get-random-bit.js";
-import { getRandomInt } from "$lib/get-random-int.js";
-import { getTwoPointsDist } from "$lib/get-two-points-dist.js";
+import { getRandomBit } from "libjs/generic/get-random-bit.js";
+import { getRandomInt } from "libjs/generic/get-random-int.js";
+import { getTwoPointsDist } from "libjs/generic/get-two-points-dist.js";
 
-import type { WorkerInitData, MessageForm } from "./types.ts";
+import type { MessageForm } from "$lib/types.ts";
+import type { WorkerInitData } from "./types.js";
 
 
 export class CellsState {
@@ -94,9 +95,9 @@ const cellsMachine = {
         }
     },
 
-    initRules(bRules: Array<number>, sRules: Array<number>): void {
-        this.bRules = new Set(bRules);
-        this.sRules = new Set(sRules);
+    initRules(bRules: Set<number>, sRules: Set<number>): void {
+        this.bRules = bRules;
+        this.sRules = sRules;
     },
 
     clear(): void {

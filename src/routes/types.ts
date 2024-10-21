@@ -5,8 +5,8 @@ export interface WorkerInitData {
         yLen: number;
         cellSize: number;
         rules: {
-            b: Array<number>;
-            s: Array<number>;
+            b: Set<number>;
+            s: Set<number>;
         };
         sharedBuffer: SharedArrayBuffer;
         offscreen: OffscreenCanvas;
@@ -16,9 +16,4 @@ export interface WorkerInitData {
         canvasScopeHeight: number;
         cellImageDataArray: Uint8ClampedArray;
     };
-}
-
-export interface MessageForm {
-    type: string;
-    input?: any;
 }

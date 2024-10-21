@@ -1,38 +1,34 @@
 <script lang="ts">
     import { onMount, onDestroy } from "svelte";
+    import { SvelteSet } from "svelte/reactivity";
     import faviconURL from "./favicon.svg";
-    import { HideCursorHandler } from "$lib/hide-cursor-handler.js";
-    import { ScreenWakeLock } from "$lib/screen-wake-lock.js";
-    import { range } from "$lib/range.js";
-    import { getRandomInt } from "$lib/get-random-int.js";
-    import { debounce } from "$lib/debounce.js";
-    import { createNamedLogger } from "$lib/create-named-logger.js";
+    import { HideCursorHandler } from "libjs/browser/hide-cursor-handler.js";
+    import { ScreenWakeLock } from "libjs/browser/screen-wake-lock.js";
+    import { range } from "libjs/generic/range.js";
+    import { getRandomInt } from "libjs/generic/get-random-int.js";
+    import { debounce } from "libjs/generic/debounce.js";
+    import { createPrefixedLogger } from "libjs/generic/create-prefixed-logger.js";
     import { CellsState } from "./worker.js";
 
-    import type { WorkerInitData, MessageForm } from "./types.js";
+    import type { MessageForm } from "$lib/types.ts";
+    import type { WorkerInitData } from "./types.js";
 
 
-    const cellevoLog = createNamedLogger("CELLEVO");
+    const cellevoLog = createPrefixedLogger("CELLEVO");
     const edgesBorderWidth: number = 1;
     const edgesBorderPadding: number = 6;
-    let cellsState: CellsState;
+    let cellsState: CellsState = $state(new CellsState(0, 0));
     let cellBitmap: Array<Array<number>> | null = null;
     let cellSize: number | null = null;
-    let aliveCellsCount: number = 0;
-    let rules = { b: [3], s: [2, 3] };
-    let density: "L" | "M" | "H" | "U" = "M";
+    let aliveCellsCount: number = $state(0);
+    let rules = $state({ b: new SvelteSet([3]), s: new SvelteSet([2, 3]) });
+    let density: "L" | "M" | "H" | "U" = $state("M");
 
-    let innerWidth: number;
-    let showCanvas: boolean = false;
+    let innerWidth: number = $state(0);
+    let showCanvas: boolean = $state(false);
 
-    let mainLoopRunning: boolean = false;
-    let frequency: number = 1;
-
-    // TODO: These are for reactive UI.
-    // After migrating to Svelte 5, it should be possible by doing $state(new CellsState()),
-    // to use properties of that instance for reactive UI.
-    let _xLen: number = 0;
-    let _yLen: number = 0;
+    let mainLoopRunning: boolean = $state(false);
+    let frequency: number = $state(1);
 
 
     // "-1" to ideally prevent spawning last worker in same thread as main.., 4 as universal for Apple...? (navigator.hardwareConcurrency not available on Apple).
@@ -184,8 +180,6 @@
         const yLen: number = Math.trunc((node.parentElement.offsetHeight - edgesBorderWidth - edgesBorderPadding - 2) / cellSize);
 
         cellsState = new CellsState(xLen, yLen);
-        _xLen = xLen;
-        _yLen = yLen;
 
         const canvasWidth: number = xLen * cellSize;
         const canvasHeight: number = yLen * cellSize;
@@ -218,7 +212,7 @@
                     xLen,
                     yLen,
                     cellSize,
-                    rules,
+                    rules: $state.snapshot(rules),
                     sharedBuffer: cellsState.sharedBuffer,
                     offscreen,
                     arrayScopeOffsetStart: arrayScopePool,
@@ -364,20 +358,20 @@
 
     function changeRules(bs: string, num: number): void {
         if (bs === "b") {
-            if (rules.b.includes(num)) {
-                rules.b = rules.b.filter((e) => e !== num);
+            if (rules.b.has(num)) {
+                rules.b.delete(num);
             } else {
-                rules.b = [...rules.b, num];
+                rules.b.add(num);
             }
         } else if (bs === "s") {
-            if (rules.s.includes(num)) {
-                rules.s = rules.s.filter((e) => e !== num);
+            if (rules.s.has(num)) {
+                rules.s.delete(num);
             } else {
-                rules.s = [...rules.s, num];
+                rules.s.add(num);
             }
         }
 
-        workersController.post(-1, { type: "<CHANGE-RULES>", input: { rules } });
+        workersController.post(-1, { type: "<CHANGE-RULES>", input: { rules: $state.snapshot(rules) } });
     }
 
 
@@ -502,17 +496,17 @@
 <svelte:document on:fullscreenchange={resizeHandler} on:keydown={keyHandler}/>
 
 
-<article class="po-ab fl-ce">
+<article class="po-ab fl-ce m-f">
     <h1 style="display: none;">Cellevo</h1>
-    <div id="stats" class="light" class:invis={mainLoopRunning || !showCanvas} title={`${aliveCellsCount} Alive Cell${aliveCellsCount !== 1 ? "s" : ""} out of ${_xLen * _yLen} (${_xLen} x ${_yLen})`}>
+    <div id="stats" class="light" class:invis={mainLoopRunning || !showCanvas} title={`${aliveCellsCount} Alive Cell${aliveCellsCount !== 1 ? "s" : ""} out of ${cellsState.xLen * cellsState.yLen} (${cellsState.xLen} x ${cellsState.yLen})`}>
         <span>{aliveCellsCount}</span>
         <span>:</span>
-        <span>{_xLen * _yLen}</span>
+        <span>{cellsState.xLen * cellsState.yLen}</span>
     </div>
     <div id="matrix-render">
         {#if showCanvas}
             <canvas></canvas>
-            <div use:showCanvasAction on:mousedown={(ev) => switchCell(ev)} role="gridcell" tabindex="-1">
+            <div use:showCanvasAction onmousedown={(ev) => switchCell(ev)} role="gridcell" tabindex="-1">
                 {#each workersController.pool as _}
                     <canvas></canvas>
                 {/each}
@@ -525,7 +519,7 @@
                 <div title="Born Rules">
                     <span class="light symbol">B</span>
                     {#each range(0, 8) as i}
-                        <button type="button" on:mousedown={() => changeRules("b", i)} class:active-button={rules.b.includes(i)} tabindex="-1">
+                        <button type="button" onmousedown={() => changeRules("b", i)} class:active-button={rules.b.has(i)} tabindex="-1">
                             {i}
                         </button>
                     {/each}
@@ -533,7 +527,7 @@
                 <div title="Survive Rules">
                     <span class="light symbol">S</span>
                     {#each range(0, 8) as i}
-                        <button type="button" on:mousedown={() => changeRules("s", i)} class:active-button={rules.s.includes(i)} tabindex="-1">
+                        <button type="button" onmousedown={() => changeRules("s", i)} class:active-button={rules.s.has(i)} tabindex="-1">
                             {i}
                         </button>
                     {/each}
@@ -541,35 +535,35 @@
             </div>
             <div>
                 <div class="light" title="Frequency">
-                    <button on:mousedown={() => frequencyController.bigIncrement()} class="light symbol" tabindex="-1">f</button>
-                    <button type="button" on:mousedown={() => frequencyController.change(false)} disabled={frequency <= 1} tabindex="-1">«</button>
+                    <button onmousedown={() => frequencyController.bigIncrement()} class="light symbol" tabindex="-1">f</button>
+                    <button type="button" onmousedown={() => frequencyController.change(false)} disabled={frequency <= 1} tabindex="-1">«</button>
                     <span id="hz-indication">
                         <span>{frequency}</span>
                         <span>Hz</span>
                     </span>
-                    <button type="button" on:mousedown={() => frequencyController.change(true)} disabled={frequency >= frequencyController.max} tabindex="-1">»</button>
+                    <button type="button" onmousedown={() => frequencyController.change(true)} disabled={frequency >= frequencyController.max} tabindex="-1">»</button>
                 </div>
                 <div title="Density: Low | Middle | High | Ultra">
                     <span class="light symbol">ρ</span>
-                    <button type="button" on:mousedown={() => setDensity("L")} class:active-button={density === "L"} tabindex="-1">L</button>
+                    <button type="button" onmousedown={() => setDensity("L")} class:active-button={density === "L"} tabindex="-1">L</button>
                     <span>|</span>
-                    <button type="button" on:mousedown={() => setDensity("M")} class:active-button={density === "M"} tabindex="-1">M</button>
+                    <button type="button" onmousedown={() => setDensity("M")} class:active-button={density === "M"} tabindex="-1">M</button>
                     <span>|</span>
-                    <button type="button" on:mousedown={() => setDensity("H")} class:active-button={density === "H"} tabindex="-1">H</button>
+                    <button type="button" onmousedown={() => setDensity("H")} class:active-button={density === "H"} tabindex="-1">H</button>
                     <span>|</span>
-                    <button type="button" on:mousedown={() => setDensity("U")} class:active-button={density === "U"} tabindex="-1">U</button>
+                    <button type="button" onmousedown={() => setDensity("U")} class:active-button={density === "U"} tabindex="-1">U</button>
                 </div>
             </div>
             <div>
                 <div title="Switch Iteration Status">
-                    <button type="button" on:mousedown={() => loop.switch()} class:active-button={mainLoopRunning} tabindex="-1">ON</button>
+                    <button type="button" onmousedown={() => loop.switch()} class:active-button={mainLoopRunning} tabindex="-1">ON</button>
                     <span>|</span>
-                    <button type="button" on:mousedown={() => loop.switch()} class:active-button={!mainLoopRunning} tabindex="-1">OFF</button>
+                    <button type="button" onmousedown={() => loop.switch()} class:active-button={!mainLoopRunning} tabindex="-1">OFF</button>
                 </div>
-                <button type="button" on:mousedown={random} class="light" tabindex="-1" title="Randomly Switch Cells Status">
+                <button type="button" onmousedown={random} class="light" tabindex="-1" title="Randomly Switch Cells Status">
                     random
                 </button>
-                <button type="button" on:mousedown={() => workersController.post(-1, { type: "<CLEAR>" })} class="light" tabindex="-1" title="Clear Alive Cells">
+                <button type="button" onmousedown={() => workersController.post(-1, { type: "<CLEAR>" })} class="light" tabindex="-1" title="Clear Alive Cells">
                     clear
                 </button>
             </div>
@@ -583,61 +577,15 @@
 
     $color-primary: #ff7931; // rgb(255, 121, 49)
     $color-tertiary: color.change($color-primary, $alpha: 0.4);
-
-    *, *::before, *::after {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
-        line-height: 1.4em;
-        letter-spacing: 0.04em;
-    }
-
-    button {
-        font-family: inherit;
-        font-size: inherit;
-        color: inherit;
-        font-weight: inherit;
-        cursor: pointer;
-    }
-
-    ::placeholder {
-        opacity: 0.8;
-        font-style: italic;
-    }
-
-    .invis {
-        opacity: 0;
-        transition: 0.2s !important;
-        pointer-events: none;
-    }
-
-    @font-face {
-        font-family: "FiraMono";
-        src: url("/FiraMono-Regular.ttf");
-    }
+    // $color-primary: #ff7931;
+    // $color-primary: #ff0044;
+    // $color-primary: #ff8605;
+    // $color-primary: #ff2744;
 
     article {
-        font-family: "FiraMono", monospace;
-        font-size: clamp(1rem, calc(1rem + 0.32vw), 1.6rem);
-        user-select: none;
-        background-color: #000;
         padding: 0.2em 0.6em;
         min-height: 15em;
-    }
-
-    .po-ab {
-        position: absolute;
-        top: 0;
-        bottom: 0;
-        left: 0;
-        right: 0;
-    }
-
-    .fl-ce {
-        display: flex;
-        flex-flow: column nowrap;
-        justify-content: center;
-        align-items: center;
+        // filter: drop-shadow(0 0 0.3em $color-primary);
     }
 
     #stats {
@@ -679,6 +627,7 @@
 
         canvas {
             animation: canvas-fade-in 1s ease-out forwards 0.1s;
+            // box-shadow: inset 0 0 0.23em color.change($color-primary, $alpha: 0.3);
             transition: 0.4s ease-out;
             filter: opacity(0) grayscale(0.3);
         }
@@ -688,6 +637,7 @@
         }
 
         & > div {
+            // cursor: pointer;
             display: flex;
             flex-flow: column nowrap;
         }
@@ -833,6 +783,7 @@
 
                 &:nth-child(1) { // B and S parameters row
                     flex-flow: column nowrap;
+                    // height: 3em;
                     gap: 0.5em;
                 }
 

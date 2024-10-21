@@ -5,6 +5,64 @@
 		<link rel="icon" href="%sveltekit.assets%/favicon.png" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		%sveltekit.head%
+		<style>
+			*, *::before, *::after {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+                line-height: 1.4em;
+                letter-spacing: 0.04em;
+            }
+
+            @font-face {
+                font-family: "FiraMono";
+                src: url("/fonts/FiraMono-Regular.ttf");
+            }
+
+            body {
+                font-size: clamp(1rem, calc(1rem + 0.32vw), 1.6rem);
+                user-select: none;
+                background-color: #000;
+            }
+
+            button {
+                font-family: inherit;
+                font-size: inherit;
+                color: inherit;
+                font-weight: inherit;
+                cursor: pointer;
+            }
+
+            ::placeholder {
+                opacity: 0.8;
+                font-style: italic;
+            }
+
+            .invis {
+                opacity: 0;
+                transition: 0.2s !important;
+                pointer-events: none;
+            }
+
+            .po-ab {
+                position: absolute;
+                top: 0;
+                bottom: 0;
+                left: 0;
+                right: 0;
+            }
+
+            .fl-ce {
+                display: flex;
+                flex-flow: column nowrap;
+                justify-content: center;
+                align-items: center;
+            }
+
+            .m-f {
+                font-family: "FiraMono", monospace;
+            }
+		</style>
 	</head>
 	<body data-sveltekit-preload-data="hover">
 		<div style="display: contents">%sveltekit.body%</div>
