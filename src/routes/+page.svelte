@@ -270,8 +270,8 @@
 
 
     const loop = {
-        timer: <number | null> null,
-        lastLoopRunTime: <number | null> null,
+        timer: <number | undefined> undefined,
+        lastLoopRunTime: <number> 0,
 
         run(): void {
             if (mainLoopRunning) {
@@ -292,10 +292,10 @@
 
         continue(): void {
             if (mainLoopRunning) {
-                const timeDeltaFromLast: number = performance.now() - (this.lastLoopRunTime as number);
+                const timeDeltaFromLast: number = performance.now() - this.lastLoopRunTime;
                 const timeMS: number = (1000 / frequency) - timeDeltaFromLast;
 
-                if (this.timer) clearTimeout(this.timer); // Fixes bug that appear when fast switching (this.switch) occurs, i.e. now only one timer at time can run.
+                clearTimeout(this.timer);
                 this.timer = setTimeout((): void => this.run(), timeMS > 0 ? timeMS : 0);
             } else {
                 updateAliveCellsCount();
@@ -307,7 +307,7 @@
     const frequencyController = {
         max: <number> 300,
         buttonHzIsDown: <boolean> false,
-        buttonHzIsDownLongTimer: <number | null> null,
+        buttonHzIsDownLongTimer: <number | undefined> undefined,
         bigIncrementSize: <number> 30,
 
         change(increment: boolean): void {
@@ -333,7 +333,7 @@
             }
 
             document.body.addEventListener("mouseup", (): void => {
-                if (this.buttonHzIsDownLongTimer) clearTimeout(this.buttonHzIsDownLongTimer);
+                clearTimeout(this.buttonHzIsDownLongTimer);
                 this.buttonHzIsDown = false;
             }, { once: true });
         },
@@ -470,7 +470,7 @@
 
 
     onDestroy(async (): Promise<void> => {
-        if (loop.timer) clearTimeout(loop.timer);
+        clearTimeout(loop.timer);
         workersController.terminate();
         switchEffect.clear();
         debouncedShowCanvas.clear();
@@ -642,7 +642,7 @@
             flex-flow: column nowrap;
         }
 
-        &:not(:has(canvas)) {
+        &:not(:global(:has(canvas))) {
             transition: 0.12s ease-out;
             background-color: color.change($color-primary, $alpha: 0.06);
         }
