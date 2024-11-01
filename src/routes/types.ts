@@ -4,6 +4,7 @@ export interface WorkerInitData {
         xLen: number;
         yLen: number;
         cellSize: number;
+        cellPadding: number;
         rules: {
             b: Set<number>;
             s: Set<number>;
@@ -14,6 +15,5 @@ export interface WorkerInitData {
         arrayScopeOffsetEnd: number;
         canvasWidth: number;
         canvasScopeHeight: number;
-        cellImageDataArray: Uint8ClampedArray;
     };
 }

@@ -18,8 +18,8 @@
     const edgesBorderWidth: number = 1;
     const edgesBorderPadding: number = 6;
     let cellsState: CellsState = $state(new CellsState(0, 0));
-    let cellBitmap: Array<Array<number>> | null = null;
-    let cellSize: number | null = null;
+    let cellSize: number;
+    let cellPadding: number;
     let aliveCellsCount: number = $state(0);
     let rules = $state({ b: new SvelteSet([3]), s: new SvelteSet([2, 3]) });
     let density: "L" | "M" | "H" | "U" = $state("M");
@@ -146,58 +146,26 @@
             return;
         }
 
-        cellBitmap =
-            density === "U" ? [
-                [255]
-            ] :
-            density === "H" ? [
-                [128,255,128],
-                [255,255,255],
-                [128,255,128]
-            ] :
-            density === "M" ? [
-                [22 ,86 ,127,86 ,42 ],
-                [86 ,255,255,255,86 ],
-                [127,255,255,255,127],
-                [86 ,255,255,255,86 ],
-                [22 ,86 ,127,86 ,22 ]
-            ] :
-            [
-                [0  ,0  ,0  ,0  ,0  ,0  ,0  ,0  ,0  ],
-                [0  ,0  ,0  ,86 ,127,86 ,0  ,0  ,0  ],
-                [0  ,0  ,127,255,255,255,127,0  ,0  ],
-                [0  ,86 ,255,255,255,255,255,86 ,0  ],
-                [0  ,127,255,255,255,255,255,127,0  ],
-                [0  ,86 ,255,255,255,255,255,86 ,0  ],
-                [0  ,0  ,127,255,255,255,127,0  ,0  ],
-                [0  ,0  ,0  ,86 ,127,86 ,0  ,0  ,0  ],
-                [0  ,0  ,0  ,0  ,0  ,0  ,0  ,0  ,0  ]
-            ];
-
-        cellSize = cellBitmap.length;
+        cellSize = density === "U" ? 1 : density === "H" ? 3 : density === "M" ? 5 : 9;
+        cellPadding = density === "U" ? 0 : density === "H" ? 0.08 : density === "M" ? 0.3 : 0.8;
 
         const xLen: number = Math.trunc((node.parentElement.offsetWidth - edgesBorderWidth - edgesBorderPadding - 2) / cellSize);
         const yLen: number = Math.trunc((node.parentElement.offsetHeight - edgesBorderWidth - edgesBorderPadding - 2) / cellSize);
-
-        cellsState = new CellsState(xLen, yLen);
 
         const canvasWidth: number = xLen * cellSize;
         const canvasHeight: number = yLen * cellSize;
 
         initBackground(node.previousElementSibling as HTMLCanvasElement, canvasWidth, canvasHeight);
 
-        const cellImageDataArray: Uint8ClampedArray = new Uint8ClampedArray(cellSize * cellSize * 4);
-
-        for (let i = 0; i < cellImageDataArray.length; i += 4) {
-            const x: number = (i / 4) % cellSize;
-            const y: number = Math.floor(i / (4 * cellSize));
-
-            if (cellBitmap[y][x] > 0) {
-                cellImageDataArray[i] = 255;
-                cellImageDataArray[i + 1] = 121;
-                cellImageDataArray[i + 2] = 49;
-                cellImageDataArray[i + 3] = cellBitmap[y][x];
-            }
+        // This keeps the cells state, if there is no delta between last and current matrix dimensions.
+        if ((xLen !== cellsState.xLen) || (yLen !== cellsState.yLen)) {
+            cellsState = new CellsState(xLen, yLen);
+        } else {
+            // Renderer draws cell only if there is delta against the last state array,
+            // so we need to enforce the delta to be able to re-render it.
+            // Since all logic uses only 0 and 1 to represent the cell state,
+            // filling the last state array with for example 2, ensures there will be delta.
+            cellsState.lastStateArray.fill(2);
         }
 
         let arrayScopePool: number = 0;
@@ -212,6 +180,7 @@
                     xLen,
                     yLen,
                     cellSize,
+                    cellPadding,
                     rules: $state.snapshot(rules),
                     sharedBuffer: cellsState.sharedBuffer,
                     offscreen,
@@ -219,13 +188,21 @@
                     arrayScopeOffsetEnd: arrayScopePool += (arrayScopeYLen * xLen),
                     canvasWidth,
                     canvasScopeHeight: arrayScopeYLen * cellSize,
-                    cellImageDataArray
                 }
             };
 
             workersController.post(i, data, [offscreen]);
         }
     }
+
+
+    const showCanvasAction = (node: HTMLElement) => {
+        try {
+            initMatrix(node);
+        } catch (err) {
+            cellevoLog("error", `failed to initialize matrix | ${err}`);
+        }
+    };
 
 
     function updateAliveCellsCount(): void {
@@ -239,15 +216,6 @@
 
         aliveCellsCount = aliveN;
     }
-
-
-    const showCanvasAction = (node: HTMLElement) => {
-        try {
-            initMatrix(node);
-        } catch (err) {
-            cellevoLog("error", `failed to initialize matrix | ${err}`);
-        }
-    };
 
 
     let hideCursorHandler: HideCursorHandler | null = null;
@@ -585,7 +553,6 @@
     article {
         padding: 0.2em 0.6em;
         min-height: 15em;
-        // filter: drop-shadow(0 0 0.3em $color-primary);
     }
 
     #stats {
@@ -603,13 +570,11 @@
             &:first-of-type {
                 text-align: right;
                 width: 30vw;
-                // margin: 0 0 0 auto;
             }
 
             &:last-of-type {
                 text-align: left;
                 width: 30vw;
-                // margin: 0 auto 0 0;
             }
         }
     }
@@ -627,7 +592,6 @@
 
         canvas {
             animation: canvas-fade-in 1s ease-out forwards 0.1s;
-            // box-shadow: inset 0 0 0.23em color.change($color-primary, $alpha: 0.3);
             transition: 0.4s ease-out;
             filter: opacity(0) grayscale(0.3);
         }
@@ -637,7 +601,6 @@
         }
 
         & > div {
-            // cursor: pointer;
             display: flex;
             flex-flow: column nowrap;
         }
@@ -687,9 +650,8 @@
             align-items: center;
             justify-content: center;
             gap: 1.8em;
-            // height: 1em;
 
-            &:nth-child(1) { // B and S parameters row
+            &:nth-child(1) { // B and S parameters row.
                 button {
                     &:not(&:last-of-type) {
                         margin-right: 0.5em;
@@ -702,7 +664,7 @@
                 }
             }
 
-            &:nth-child(2) { // frequency row
+            &:nth-child(2) { // Frequency row.
                 span {
                     display: flex;
                     justify-content: center;
@@ -781,9 +743,8 @@
             & > div {
                 gap: 1em;
 
-                &:nth-child(1) { // B and S parameters row
+                &:nth-child(1) { // B and S parameters row.
                     flex-flow: column nowrap;
-                    // height: 3em;
                     gap: 0.5em;
                 }
 
