@@ -27,10 +27,6 @@
     let innerWidth: number = $state(0);
     let showCanvas: boolean = $state(false);
 
-    let mainLoopRunning: boolean = $state(false);
-    let frequency: number = $state(1);
-
-
     // "-1" to ideally prevent spawning last worker in same thread as main.., 4 as universal for Apple...? (navigator.hardwareConcurrency not available on Apple).
     const threadsN: number = (navigator?.hardwareConcurrency >= 2 ? navigator.hardwareConcurrency : 4) - 1;
 
@@ -220,7 +216,7 @@
 
     let hideCursorHandler: HideCursorHandler | null = null;
     const switchEffect: ReturnType<typeof debounce> = debounce(async () => {
-        if (mainLoopRunning) {
+        if (loop.running) {
             await ScreenWakeLock.request();
 
             if (hideCursorHandler === null) {
@@ -237,31 +233,32 @@
     }, 1800);
 
 
-    const loop = {
+    const loop = $state({
+        running: <boolean> false,
         timer: <number | undefined> undefined,
         lastLoopRunTime: <number> 0,
 
         run(): void {
-            if (mainLoopRunning) {
+            if (this.running) {
                 this.lastLoopRunTime = performance.now();
                 workersController.post(-1, { type: "<EVOLVE>" });
             }
         },
 
         switch(): void {
-            mainLoopRunning = !mainLoopRunning;
+            this.running = !this.running;
 
             this.run();
 
-            if (!mainLoopRunning) updateAliveCellsCount();
+            if (!this.running) updateAliveCellsCount();
 
             switchEffect.execute();
         },
 
         continue(): void {
-            if (mainLoopRunning) {
+            if (this.running) {
                 const timeDeltaFromLast: number = performance.now() - this.lastLoopRunTime;
-                const timeMS: number = (1000 / frequency) - timeDeltaFromLast;
+                const timeMS: number = (1000 / frequencyController.value) - timeDeltaFromLast;
 
                 clearTimeout(this.timer);
                 this.timer = setTimeout((): void => this.run(), timeMS > 0 ? timeMS : 0);
@@ -269,10 +266,11 @@
                 updateAliveCellsCount();
             }
         }
-    };
+    });
 
 
-    const frequencyController = {
+    const frequencyController = $state({
+        value: <number> 1,
         max: <number> 300,
         buttonHzIsDown: <boolean> false,
         buttonHzIsDownLongTimer: <number | undefined> undefined,
@@ -280,13 +278,13 @@
 
         change(increment: boolean): void {
             const performChange = (increment: boolean, longPress?: boolean) => {
-                if (increment && frequency < this.max) {
-                    frequency++;
-                } else if (frequency !== 1) {
-                    frequency--;
+                if (increment && this.value < this.max) {
+                    this.value++;
+                } else if (this.value !== 1) {
+                    this.value--;
                 }
 
-                if (this.buttonHzIsDown && longPress && frequency !== 1 && frequency !== this.max) {
+                if (this.buttonHzIsDown && longPress && this.value !== 1 && this.value !== this.max) {
                     setTimeout((): void => performChange(increment, longPress), 70);
                 }
 
@@ -296,7 +294,7 @@
             this.buttonHzIsDown = true;
             performChange(increment);
 
-            if (frequency !== 1 && frequency !== this.max) {
+            if (this.value !== 1 && this.value !== this.max) {
                 this.buttonHzIsDownLongTimer = setTimeout((): void => performChange(increment, true), 460);
             }
 
@@ -307,21 +305,21 @@
         },
 
         bigIncrement(): void {
-            if (frequency < this.max - this.bigIncrementSize) {
-                if (frequency === 1) {
-                    frequency += this.bigIncrementSize - 1;
+            if (this.value < this.max - this.bigIncrementSize) {
+                if (this.value === 1) {
+                    this.value += this.bigIncrementSize - 1;
                 } else {
-                    frequency += this.bigIncrementSize;
+                    this.value += this.bigIncrementSize;
                 }
-            } else if (frequency !== this.max) {
-                frequency = this.max;
+            } else if (this.value !== this.max) {
+                this.value = this.max;
             } else {
-                frequency = 1;
+                this.value = 1;
             }
 
             loop.run();
         }
-    };
+    });
 
 
     function changeRules(bs: string, num: number): void {
@@ -371,11 +369,18 @@
     }
 
 
-    function setDensity(level: "L" | "M" | "H" | "U"): void {
-        if (level !== density) {
-            density = level;
-            resizeHandler();
+    function setDensity(level?: "L" | "M" | "H" | "U"): void {
+        if (level) {
+            if (level !== density) {
+                density = level;
+            }
+        } else {
+            if (innerWidth) {
+                density = innerWidth > 640 ? "M" : "H";
+            }
         }
+
+        resizeHandler();
     }
 
 
@@ -391,6 +396,20 @@
         }
     }
 
+    function clear(): void {
+        workersController.post(-1, { type: "<CLEAR>" });
+    }
+
+    function reset(): void {
+        rules.b.clear();
+        rules.b.add(3)
+        rules.s.clear();
+        rules.s.add(2);
+        rules.s.add(3);
+        frequencyController.value = 1;
+        setDensity();
+    }
+
 
     const debouncedShowCanvas: ReturnType<typeof debounce> = debounce((): boolean => showCanvas = true, 400);
 
@@ -399,7 +418,7 @@
             showCanvas = false;
         }
 
-        if (mainLoopRunning) {
+        if (loop.running) {
             loop.switch();
         }
 
@@ -429,11 +448,7 @@
     }
 
 	onMount((): void => {
-        if (innerWidth) {
-            density = innerWidth > 640 ? "M" : "H";
-        }
-
-        showCanvas = true;
+        setDensity();
 	});
 
 
@@ -466,7 +481,7 @@
 
 <article class="po-ab fl-ce m-f">
     <h1 style="display: none;">Cellevo</h1>
-    <div id="stats" class="light" class:invis={mainLoopRunning || !showCanvas} title={`${aliveCellsCount} Alive Cell${aliveCellsCount !== 1 ? "s" : ""} out of ${cellsState.xLen * cellsState.yLen} (${cellsState.xLen} x ${cellsState.yLen})`}>
+    <div id="stats" class="light" class:invis={loop.running || !showCanvas} title={`${aliveCellsCount} Alive Cell${aliveCellsCount !== 1 ? "s" : ""} out of ${cellsState.xLen * cellsState.yLen} (${cellsState.xLen} x ${cellsState.yLen})`}>
         <span>{aliveCellsCount}</span>
         <span>:</span>
         <span>{cellsState.xLen * cellsState.yLen}</span>
@@ -504,12 +519,12 @@
             <div>
                 <div class="light" title="Frequency">
                     <button onmousedown={() => frequencyController.bigIncrement()} class="light symbol" tabindex="-1">f</button>
-                    <button type="button" onmousedown={() => frequencyController.change(false)} disabled={frequency <= 1} tabindex="-1">«</button>
+                    <button type="button" onmousedown={() => frequencyController.change(false)} disabled={frequencyController.value <= 1} tabindex="-1">«</button>
                     <span id="hz-indication">
-                        <span>{frequency}</span>
+                        <span>{frequencyController.value}</span>
                         <span>Hz</span>
                     </span>
-                    <button type="button" onmousedown={() => frequencyController.change(true)} disabled={frequency >= frequencyController.max} tabindex="-1">»</button>
+                    <button type="button" onmousedown={() => frequencyController.change(true)} disabled={frequencyController.value >= frequencyController.max} tabindex="-1">»</button>
                 </div>
                 <div title="Density: Low | Middle | High | Ultra">
                     <span class="light symbol">ρ</span>
@@ -524,16 +539,22 @@
             </div>
             <div>
                 <div title="Switch Iteration Status">
-                    <button type="button" onmousedown={() => loop.switch()} class:active-button={mainLoopRunning} tabindex="-1">ON</button>
+                    <button type="button" onmousedown={() => loop.switch()} class:active-button={loop.running} tabindex="-1">ON</button>
                     <span>|</span>
-                    <button type="button" onmousedown={() => loop.switch()} class:active-button={!mainLoopRunning} tabindex="-1">OFF</button>
+                    <button type="button" onmousedown={() => loop.switch()} class:active-button={!loop.running} tabindex="-1">OFF</button>
                 </div>
                 <button type="button" onmousedown={random} class="light" tabindex="-1" title="Randomly Switch Cells Status">
                     random
                 </button>
-                <button type="button" onmousedown={() => workersController.post(-1, { type: "<CLEAR>" })} class="light" tabindex="-1" title="Clear Alive Cells">
-                    clear
-                </button>
+                {#if aliveCellsCount > 0 || loop.running}
+                    <button type="button" onmousedown={() => clear()} class="light" tabindex="-1" title="Clear Alive Cells">
+                        clear
+                    </button>
+                {:else}
+                    <button type="button" onmousedown={() => reset()} class="light" tabindex="-1" title="Reset Parameters">
+                        reset
+                    </button>
+                {/if}
             </div>
         </div>
     </div>
