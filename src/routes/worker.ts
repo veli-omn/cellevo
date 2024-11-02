@@ -82,15 +82,15 @@ class CellsRenderer {
     cellSize: number;
     canvas: OffscreenCanvas;
     ctx: OffscreenCanvasRenderingContext2D;
-    cellBitmap: ImageBitmap;
+    cellIData: ImageData;
 
-    constructor(cellSize: number, offscreen: OffscreenCanvas, width: number, height: number, cellBitmap: ImageBitmap) {
+    constructor(cellSize: number, offscreen: OffscreenCanvas, width: number, height: number, cellIData: ImageData) {
         this.cellSize = cellSize;
         this.canvas = offscreen;
-        this.ctx = this.canvas.getContext("2d", { willReadFrequently: true })!;
+        this.ctx = offscreen.getContext("2d", { willReadFrequently: true })!;
         this.canvas.width = width;
         this.canvas.height = height;
-        this.cellBitmap = cellBitmap;
+        this.cellIData = cellIData;
     }
 
     draw(): void {
@@ -115,7 +115,7 @@ class CellsRenderer {
         const x: number = col * this.cellSize;
         const y: number = row * this.cellSize;
 
-        this.ctx.drawImage(this.cellBitmap, x, y);
+        this.ctx.putImageData(this.cellIData, x, y);
     }
 
     clearCell(col: number, row: number): void {
@@ -127,7 +127,7 @@ class CellsRenderer {
 }
 
 
-function genCircleImageBitmap(size: number, padding: number = 0, color: string = "#ff8131"): Promise<ImageBitmap> {
+function genCircleImageData(size: number, padding: number = 0, color: string = "#ff8131"): ImageData {
     const offscreen: OffscreenCanvas = new OffscreenCanvas(size, size);
     const ctx: OffscreenCanvasRenderingContext2D = offscreen.getContext("2d")!;
     const radius: number = size / 2;
@@ -141,7 +141,7 @@ function genCircleImageBitmap(size: number, padding: number = 0, color: string =
         ctx.fillRect(0, 0, 1, 1);
     }
 
-    return createImageBitmap(offscreen);
+    return ctx.getImageData(0, 0, size, size);
 }
 
 
@@ -149,14 +149,14 @@ async function relay(ev: MessageEvent<MessageForm>): Promise<void> {
     switch (ev.data.type) {
         case "<INIT>":
             const input: WorkerInitData["input"] = ev.data.input;
-            const cellBitmap: ImageBitmap = await genCircleImageBitmap(input.cellSize, input.cellPadding);
+            const cellIData: ImageData = genCircleImageData(input.cellSize, input.cellPadding);
 
             arrayScopeOffsetStart = input.arrayScopeOffsetStart;
             arrayScopeOffsetEnd = input.arrayScopeOffsetEnd;
 
             cellsState = new CellsState(input.xLen, input.yLen, input.sharedBuffer);
             cellsMachine = new CellsMachine(input.rules.b, input.rules.s);
-            cellsRenderer = new CellsRenderer(input.cellSize, input.offscreen, input.canvasWidth, input.canvasScopeHeight, cellBitmap);
+            cellsRenderer = new CellsRenderer(input.cellSize, input.offscreen, input.canvasWidth, input.canvasScopeHeight, cellIData);
 
             cellsRenderer.draw();
 
