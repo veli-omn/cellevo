@@ -17,3 +17,14 @@ export interface WorkerInitData {
         canvasScopeHeight: number;
     };
 }
+
+export type Density = "L" | "M" | "H" | "U";
+
+export interface SnapshotData {
+    xLen: number;
+    yLen: number;
+    bufferState: Uint8Array;
+    rules: WorkerInitData["input"]["rules"];
+    frequency: number;
+    density: Density;
+}

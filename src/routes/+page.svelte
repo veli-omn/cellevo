@@ -1,17 +1,17 @@
 <script lang="ts">
+    import faviconURL from "./favicon.svg";
     import { onMount, onDestroy } from "svelte";
     import { SvelteSet } from "svelte/reactivity";
-    import faviconURL from "./favicon.svg";
     import { HideCursorHandler } from "libjs/browser/hide-cursor-handler.js";
     import { ScreenWakeLock } from "libjs/browser/screen-wake-lock.js";
     import { range } from "libjs/generic/range.js";
     import { getRandomInt } from "libjs/generic/get-random-int.js";
     import { debounce } from "libjs/generic/debounce.js";
     import { createPrefixedLogger } from "libjs/generic/create-prefixed-logger.js";
-    import { CellsState } from "./worker.js";
-
+    import { CellsState } from "./cells-state.js";
+    import { InterscopeMap } from "libjs/browser/interscope-map.js";
     import type { MessageForm } from "$lib/types.ts";
-    import type { WorkerInitData } from "./types.js";
+    import type { Density, WorkerInitData, SnapshotData } from "./types.js";
 
 
     const cellevoLog = createPrefixedLogger("CELLEVO");
@@ -20,16 +20,16 @@
     let cellsState: CellsState = $state(new CellsState(0, 0));
     let cellSize: number;
     let cellPadding: number;
-    let aliveCellsCount: number = $state(0);
+    let aliveCells: number = $state(0);
     let rules = $state({ b: new SvelteSet([3]), s: new SvelteSet([2, 3]) });
-    let density: "L" | "M" | "H" | "U" = $state("M");
+    let density: Density = $state("M");
 
     let innerWidth: number = $state(0);
-    let showCanvas: boolean = $state(false);
+    let canvasDOM: boolean = $state(false);
+    let canvasVisible: boolean = $state(false);
 
     // "-1" to ideally prevent spawning last worker in same thread as main.., 4 as universal for Apple...? (navigator.hardwareConcurrency not available on Apple).
     const threadsN: number = (navigator?.hardwareConcurrency >= 2 ? navigator.hardwareConcurrency : 4) - 1;
-
     const workersController = {
         count: <number> threadsN,
         pool: <Array<Worker>> [],
@@ -55,9 +55,12 @@
 
                     if (this.waiting === this.count) {
                         switch (ev.data.input) {
+                            case "<INIT>":
+                                updateAliveCellsCount();
+                                canvasVisible = true;
+                                break;
                             case "<EVOLVE>":
                                 cellsState.switchIndication();
-                            case "<INIT>":
                             case "<RANDOM>":
                             case "<CLEAR>":
                                 this.post(-1, { type: "<RENDER>" });
@@ -95,12 +98,7 @@
     }
 
 
-    function initBackground(canvas: HTMLCanvasElement | null, canvasWidth: number, canvasHeight: number): void {
-        if (!canvas) {
-            cellevoLog("error", "failed to initialize matrix | invalid canvas element");
-            return;
-        }
-
+    function initBackground(canvas: HTMLCanvasElement, canvasWidth: number, canvasHeight: number): void {
         const ctx: CanvasRenderingContext2D = canvas.getContext("2d") as CanvasRenderingContext2D;
         const edgeBorderLen: number = Math.round((canvasWidth < canvasHeight ? canvasWidth : canvasHeight) * 0.4);
 
@@ -137,16 +135,11 @@
 
 
     function initMatrix(node: HTMLElement): void {
-        if (!node.parentElement) {
-            cellevoLog("error", "failed to initialize matrix | invalid state");
-            return;
-        }
-
         cellSize = density === "U" ? 1 : density === "H" ? 3 : density === "M" ? 5 : 9;
         cellPadding = density === "U" ? 0 : density === "H" ? 0.08 : density === "M" ? 0.3 : 0.8;
 
-        const xLen: number = Math.trunc((node.parentElement.offsetWidth - edgesBorderWidth - edgesBorderPadding - 2) / cellSize);
-        const yLen: number = Math.trunc((node.parentElement.offsetHeight - edgesBorderWidth - edgesBorderPadding - 2) / cellSize);
+        const xLen: number = Math.trunc((node.parentElement!.offsetWidth - edgesBorderWidth - edgesBorderPadding - 2) / cellSize);
+        const yLen: number = Math.trunc((node.parentElement!.offsetHeight - edgesBorderWidth - edgesBorderPadding - 2) / cellSize);
 
         const canvasWidth: number = xLen * cellSize;
         const canvasHeight: number = yLen * cellSize;
@@ -210,7 +203,7 @@
             }
         }
 
-        aliveCellsCount = aliveN;
+        aliveCells = aliveN;
     }
 
 
@@ -235,7 +228,7 @@
 
     const loop = $state({
         running: <boolean> false,
-        timer: <number | undefined> undefined,
+        timer: <number> 0,
         lastLoopRunTime: <number> 0,
 
         run(): void {
@@ -273,7 +266,7 @@
         value: <number> 1,
         max: <number> 300,
         buttonHzIsDown: <boolean> false,
-        buttonHzIsDownLongTimer: <number | undefined> undefined,
+        buttonHzIsDownLongTimer: <number> 0,
         bigIncrementSize: <number> 30,
 
         change(increment: boolean): void {
@@ -322,31 +315,23 @@
     });
 
 
-    function changeRules(bs: string, num: number): void {
-        if (bs === "b") {
-            if (rules.b.has(num)) {
-                rules.b.delete(num);
-            } else {
-                rules.b.add(num);
-            }
-        } else if (bs === "s") {
-            if (rules.s.has(num)) {
-                rules.s.delete(num);
-            } else {
-                rules.s.add(num);
-            }
+    const debouncedShowCanvas: ReturnType<typeof debounce> = debounce((): boolean => canvasDOM = true, 400);
+
+    function resizeHandler(): void {
+        if (canvasDOM) {
+            canvasDOM = false;
+            canvasVisible = false;
         }
 
-        workersController.post(-1, { type: "<CHANGE-RULES>", input: { rules: $state.snapshot(rules) } });
+        if (loop.running) {
+            loop.switch();
+        }
+
+        debouncedShowCanvas.execute();
     }
 
 
     function switchCell(event: MouseEvent): void {
-        if (!event.currentTarget || !cellsState.xLen || !cellsState.yLen || !cellSize) {
-            cellevoLog("error", "failed to switch cell | invalid state");
-            return;
-        }
-
         const target: HTMLElement = event.currentTarget as HTMLElement;
         const rect: DOMRect = target.getBoundingClientRect();
         const mouseX: number = event.clientX - rect.left;
@@ -368,21 +353,32 @@
         workersController.post(-1, { type: "<RENDER>" });
     }
 
-
-    function setDensity(level?: "L" | "M" | "H" | "U"): void {
-        if (level) {
-            if (level !== density) {
-                density = level;
+    function switchRule(rule: string, num: number): void {
+        if (rule === "b") {
+            if (rules.b.has(num)) {
+                rules.b.delete(num);
+            } else {
+                rules.b.add(num);
             }
-        } else {
-            if (innerWidth) {
-                density = innerWidth > 640 ? "M" : "H";
+        } else if (rule === "s") {
+            if (rules.s.has(num)) {
+                rules.s.delete(num);
+            } else {
+                rules.s.add(num);
             }
         }
 
-        resizeHandler();
+        workersController.post(-1, { type: "<CHANGE-RULES>", input: { rules: $state.snapshot(rules) } });
     }
 
+    function setDensity(level: Density): void {
+        if (level !== density) {
+            density = level;
+            resizeHandler();
+        }
+    }
+
+    const setDefaultDensity = (): Density => density = innerWidth > 640 ? "M" : "H";
 
     function random(): void {
         const numOfPasses: number = getRandomInt(1, 8);
@@ -401,31 +397,17 @@
     }
 
     function reset(): void {
-        rules.b.clear();
-        rules.b.add(3)
-        rules.s.clear();
-        rules.s.add(2);
-        rules.s.add(3);
+        rules.b = new SvelteSet([3]);
+        rules.s = new SvelteSet([2, 3]);
         frequencyController.value = 1;
-        setDensity();
+        setDefaultDensity();
+        resizeHandler();
     }
 
-
-    const debouncedShowCanvas: ReturnType<typeof debounce> = debounce((): boolean => showCanvas = true, 400);
-
-    function resizeHandler(): void {
-        if (showCanvas) {
-            showCanvas = false;
-        }
-
-        if (loop.running) {
-            loop.switch();
-        }
-
-        debouncedShowCanvas.execute();
-    }
 
     function keyHandler(ev: KeyboardEvent): void {
+        if (!canvasVisible) return;
+
         switch (ev.key) {
             case " ":
                 loop.switch();
@@ -442,27 +424,63 @@
 
         for (let i = 0; i <= 8; i++) {
             if (ev.key === i.toString()) {
-                !ev.altKey ? changeRules("b", i) : changeRules("s", i);
+                !ev.altKey ? switchRule("b", i) : switchRule("s", i);
             }
         }
     }
 
-	onMount((): void => {
-        setDensity();
+
+    const snapshot = {
+        mapKey: <string> "CELLEVO_snapshot",
+
+        async create(): Promise<void> {
+            await InterscopeMap.set(this.mapKey, {
+                xLen: cellsState.xLen,
+                yLen: cellsState.yLen,
+                bufferState: new Uint8Array(new Uint8Array(cellsState.sharedBuffer)),
+                rules: $state.snapshot(rules),
+                frequency: frequencyController.value,
+                density
+            } as SnapshotData);
+        },
+
+        async restore(): Promise<boolean> {
+            const data = <SnapshotData> await InterscopeMap.get(this.mapKey);
+
+            if (data) {
+                cellsState = new CellsState(data.xLen, data.yLen);
+                new Uint8Array(cellsState.sharedBuffer).set(data.bufferState);
+                frequencyController.value = data.frequency;
+                rules.b = new SvelteSet(data.rules.b);
+                rules.s = new SvelteSet(data.rules.s);
+                density = data.density;
+            }
+
+            return data ? true : false;
+        }
+    };
+
+
+	onMount(async (): Promise<void> => {
+        if (!await snapshot.restore()) {
+            setDefaultDensity();
+        }
+
+        canvasDOM = true;
 	});
 
-
     onDestroy(async (): Promise<void> => {
+        if (hideCursorHandler !== null) {
+            hideCursorHandler.remove();
+        }
+
         clearTimeout(loop.timer);
         workersController.terminate();
         switchEffect.clear();
         debouncedShowCanvas.clear();
 
-        if (hideCursorHandler !== null) {
-            hideCursorHandler.remove();
-        }
-
         await ScreenWakeLock.release();
+        await snapshot.create();
     });
 </script>
 
@@ -474,22 +492,26 @@
     <meta name="keywords" content="cellevo, celluar automata, project">
 </svelte:head>
 
-<svelte:window on:resize={resizeHandler} bind:innerWidth/>
+<svelte:window bind:innerWidth onresize={resizeHandler} onbeforeunload={() => snapshot.create()}/>
 
-<svelte:document on:fullscreenchange={resizeHandler} on:keydown={keyHandler}/>
+<svelte:document
+    onfullscreenchange={resizeHandler}
+    onkeydown={keyHandler}
+    onvisibilitychange={() => document.visibilityState === "hidden" && snapshot.create()}
+/>
 
 
-<article class="po-ab fl-ce m-f">
+<article class="po-ab fl-ce m-f" inert={!canvasVisible}>
     <h1 style="display: none;">Cellevo</h1>
-    <div id="stats" class="light" class:invis={loop.running || !showCanvas} title={`${aliveCellsCount} Alive Cell${aliveCellsCount !== 1 ? "s" : ""} out of ${cellsState.xLen * cellsState.yLen} (${cellsState.xLen} x ${cellsState.yLen})`}>
-        <span>{aliveCellsCount}</span>
+    <div id="stats" class="light" class:invis={loop.running || !canvasVisible} title={`${aliveCells} Alive Cell${aliveCells !== 1 ? "s" : ""} out of ${cellsState.xLen * cellsState.yLen} (${cellsState.xLen} x ${cellsState.yLen})`}>
+        <span>{aliveCells}</span>
         <span>:</span>
         <span>{cellsState.xLen * cellsState.yLen}</span>
     </div>
     <div id="matrix-render">
-        {#if showCanvas}
+        {#if canvasDOM}
             <canvas></canvas>
-            <div use:showCanvasAction onmousedown={(ev) => switchCell(ev)} role="gridcell" tabindex="-1">
+            <div use:showCanvasAction onmousedown={(ev) => switchCell(ev)} class:invis={!canvasVisible} role="gridcell" tabindex="-1">
                 {#each workersController.pool as _}
                     <canvas></canvas>
                 {/each}
@@ -502,7 +524,7 @@
                 <div title="Born Rules">
                     <span class="light symbol">B</span>
                     {#each range(0, 8) as i}
-                        <button type="button" onmousedown={() => changeRules("b", i)} class:active-button={rules.b.has(i)} tabindex="-1">
+                        <button type="button" onmousedown={() => switchRule("b", i)} class:active-button={rules.b.has(i)} tabindex="-1">
                             {i}
                         </button>
                     {/each}
@@ -510,7 +532,7 @@
                 <div title="Survive Rules">
                     <span class="light symbol">S</span>
                     {#each range(0, 8) as i}
-                        <button type="button" onmousedown={() => changeRules("s", i)} class:active-button={rules.s.has(i)} tabindex="-1">
+                        <button type="button" onmousedown={() => switchRule("s", i)} class:active-button={rules.s.has(i)} tabindex="-1">
                             {i}
                         </button>
                     {/each}
@@ -546,7 +568,7 @@
                 <button type="button" onmousedown={random} class="light" tabindex="-1" title="Randomly Switch Cells Status">
                     random
                 </button>
-                {#if aliveCellsCount > 0 || loop.running}
+                {#if aliveCells > 0 || loop.running}
                     <button type="button" onmousedown={() => clear()} class="light" tabindex="-1" title="Clear Alive Cells">
                         clear
                     </button>
@@ -585,7 +607,7 @@
         filter: opacity(0.5) grayscale(0.3);
         text-align: center;
         margin-bottom: 0.2em;
-        transition: 2.2s;
+        transition: 0.2s;
 
         span {
             &:first-of-type {
@@ -624,6 +646,7 @@
         & > div {
             display: flex;
             flex-flow: column nowrap;
+            transition: 0.6s ease-out;
         }
 
         &:not(:global(:has(canvas))) {
