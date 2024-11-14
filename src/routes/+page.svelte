@@ -27,6 +27,7 @@
     let innerWidth: number = $state(0);
     let canvasDOM: boolean = $state(false);
     let canvasVisible: boolean = $state(false);
+    let hideCursorHandler: HideCursorHandler | null = null;
 
     // "-1" to ideally prevent spawning last worker in same thread as main.., 4 as universal for Apple...? (navigator.hardwareConcurrency not available on Apple).
     const threadsN: number = (navigator?.hardwareConcurrency >= 2 ? navigator.hardwareConcurrency : 4) - 1;
@@ -99,7 +100,7 @@
 
 
     function initBackground(canvas: HTMLCanvasElement, canvasWidth: number, canvasHeight: number): void {
-        const ctx: CanvasRenderingContext2D = canvas.getContext("2d") as CanvasRenderingContext2D;
+        const ctx: CanvasRenderingContext2D = canvas.getContext("2d")!;
         const edgeBorderLen: number = Math.round((canvasWidth < canvasHeight ? canvasWidth : canvasHeight) * 0.4);
 
         canvas.width = canvasWidth + edgesBorderWidth + edgesBorderPadding;
@@ -176,7 +177,7 @@
                     arrayScopeOffsetStart: arrayScopePool,
                     arrayScopeOffsetEnd: arrayScopePool += (arrayScopeYLen * xLen),
                     canvasWidth,
-                    canvasScopeHeight: arrayScopeYLen * cellSize,
+                    canvasScopeHeight: arrayScopeYLen * cellSize
                 }
             };
 
@@ -207,36 +208,34 @@
     }
 
 
-    let hideCursorHandler: HideCursorHandler | null = null;
-    const switchEffect: ReturnType<typeof debounce> = debounce(async () => {
-        if (loop.running) {
-            await ScreenWakeLock.request();
-
-            if (hideCursorHandler === null) {
-                hideCursorHandler = new HideCursorHandler(document.body);
-            }
-        } else {
-            await ScreenWakeLock.release();
-
-            if (hideCursorHandler !== null) {
-                hideCursorHandler.remove();
-                hideCursorHandler = null;
-            }
-        }
-    }, 1800);
-
-
     const loop = $state({
         running: <boolean> false,
-        timer: <number> 0,
-        lastLoopRunTime: <number> 0,
+        timerID: <number> 0,
+        lastRunTime: <number> 0,
 
         run(): void {
             if (this.running) {
-                this.lastLoopRunTime = performance.now();
+                this.lastRunTime = performance.now();
                 workersController.post(-1, { type: "<EVOLVE>" });
             }
         },
+
+        switchEffect: debounce(async () => {
+            if (loop.running) {
+                await ScreenWakeLock.request();
+
+                if (hideCursorHandler === null) {
+                    hideCursorHandler = new HideCursorHandler(document.body);
+                }
+            } else {
+                await ScreenWakeLock.release();
+
+                if (hideCursorHandler !== null) {
+                    hideCursorHandler.remove();
+                    hideCursorHandler = null;
+                }
+            }
+        }, 1800),
 
         switch(): void {
             this.running = !this.running;
@@ -245,16 +244,16 @@
 
             if (!this.running) updateAliveCellsCount();
 
-            switchEffect.execute();
+            this.switchEffect.execute();
         },
 
         continue(): void {
             if (this.running) {
-                const timeDeltaFromLast: number = performance.now() - this.lastLoopRunTime;
+                const timeDeltaFromLast: number = performance.now() - this.lastRunTime;
                 const timeMS: number = (1000 / frequencyController.value) - timeDeltaFromLast;
 
-                clearTimeout(this.timer);
-                this.timer = setTimeout((): void => this.run(), timeMS > 0 ? timeMS : 0);
+                clearTimeout(this.timerID);
+                this.timerID = setTimeout((): void => this.run(), timeMS > 0 ? timeMS : 0);
             } else {
                 updateAliveCellsCount();
             }
@@ -474,9 +473,9 @@
             hideCursorHandler.remove();
         }
 
-        clearTimeout(loop.timer);
+        clearTimeout(loop.timerID);
         workersController.terminate();
-        switchEffect.clear();
+        loop.switchEffect.clear();
         debouncedShowCanvas.clear();
 
         await ScreenWakeLock.release();

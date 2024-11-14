@@ -46,9 +46,9 @@ class CellsMachine  {
         const nextState: Uint8Array = cellsState.getNext();
 
         for (let index = arrayScopeOffsetStart; index < arrayScopeOffsetEnd; index++) {
-            const isAlive: boolean = currentState[index] === 1;
             const x: number = index % cellsState.xLen;
             const y: number = Math.floor(index / cellsState.xLen);
+            const isAlive: boolean = currentState[index] === 1;
             let aliveNeighbors: number = 0;
 
             for (let dy = -1; dy <= 1; dy++) {
