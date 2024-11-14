@@ -22,7 +22,7 @@ importers:
         version: 4.0.0(svelte@5.1.16)(vite@5.4.11(sass@1.80.7))
       libjs:
         specifier: github:veli-omn/libjs
-        version: https://codeload.github.com/veli-omn/libjs/tar.gz/c750f9a954aeeb395b51992671b499f040d09c0d
+        version: https://codeload.github.com/veli-omn/libjs/tar.gz/a3074bdfe21dad2bc52f4ae003115986120c50ed
       sass:
         specifier: ^1.80.7
         version: 1.80.7
@@ -523,9 +523,9 @@ packages:
     resolution: {integrity: sha512-o+NO+8WrRiQEE4/7nwRJhN1HWpVmJm511pBHUxPLtp0BUISzlBplORYSmTclCnJvQq2tKu/sgl3xVpkc7ZWuQQ==}
     engines: {node: '>=6'}
 
-  libjs@https://codeload.github.com/veli-omn/libjs/tar.gz/c750f9a954aeeb395b51992671b499f040d09c0d:
-    resolution: {tarball: https://codeload.github.com/veli-omn/libjs/tar.gz/c750f9a954aeeb395b51992671b499f040d09c0d}
-    version: 1.5.3
+  libjs@https://codeload.github.com/veli-omn/libjs/tar.gz/a3074bdfe21dad2bc52f4ae003115986120c50ed:
+    resolution: {tarball: https://codeload.github.com/veli-omn/libjs/tar.gz/a3074bdfe21dad2bc52f4ae003115986120c50ed}
+    version: 1.6.0
 
   locate-character@3.0.0:
     resolution: {integrity: sha512-SW13ws7BjaeJ6p7Q6CO2nchbYEc3X3J6WrmTTDto7yMPqVSZTUyY5Tjbid+Ab8gLnATtygYtiDIJGQRRn2ZOiA==}
@@ -1062,7 +1062,7 @@ snapshots:
 
   kleur@4.1.5: {}
 
-  libjs@https://codeload.github.com/veli-omn/libjs/tar.gz/c750f9a954aeeb395b51992671b499f040d09c0d: {}
+  libjs@https://codeload.github.com/veli-omn/libjs/tar.gz/a3074bdfe21dad2bc52f4ae003115986120c50ed: {}
 
   locate-character@3.0.0: {}
 

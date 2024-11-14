@@ -27,7 +27,7 @@
     let innerWidth: number = $state(0);
     let canvasDOM: boolean = $state(false);
     let canvasVisible: boolean = $state(false);
-    let hideCursorHandler: HideCursorHandler | null = null;
+    let hideCursorHandler: HideCursorHandler;
 
     // "-1" to ideally prevent spawning last worker in same thread as main.., 4 as universal for Apple...? (navigator.hardwareConcurrency not available on Apple).
     const threadsN: number = (navigator?.hardwareConcurrency >= 2 ? navigator.hardwareConcurrency : 4) - 1;
@@ -223,17 +223,10 @@
         switchEffect: debounce(async () => {
             if (loop.running) {
                 await ScreenWakeLock.request();
-
-                if (hideCursorHandler === null) {
-                    hideCursorHandler = new HideCursorHandler(document.body);
-                }
+                hideCursorHandler.hide();
             } else {
                 await ScreenWakeLock.release();
-
-                if (hideCursorHandler !== null) {
-                    hideCursorHandler.remove();
-                    hideCursorHandler = null;
-                }
+                hideCursorHandler.revert();
             }
         }, 1800),
 
@@ -466,17 +459,15 @@
         }
 
         canvasDOM = true;
+        hideCursorHandler = new HideCursorHandler(document.body);
 	});
 
     onDestroy(async (): Promise<void> => {
-        if (hideCursorHandler !== null) {
-            hideCursorHandler.remove();
-        }
-
         clearTimeout(loop.timerID);
         workersController.terminate();
         loop.switchEffect.clear();
         debouncedShowCanvas.clear();
+        hideCursorHandler.revert();
 
         await ScreenWakeLock.release();
         await snapshot.create();
