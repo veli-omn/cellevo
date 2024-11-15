@@ -408,16 +408,16 @@
                 random();
                 break;
             case "c":
-                workersController.post(-1, { type: "<CLEAR>" });
+                clear();
                 break;
             case "f":
                 frequencyController.bigIncrement();
-        }
-
-        for (let i = 0; i <= 8; i++) {
-            if (ev.key === i.toString()) {
-                !ev.altKey ? switchRule("b", i) : switchRule("s", i);
-            }
+            default:
+                for (let i = 0; i <= 8; i++) {
+                    if (ev.key === i.toString()) {
+                        !ev.altKey ? switchRule("b", i) : switchRule("s", i);
+                    }
+                }
         }
     }
 
@@ -479,7 +479,7 @@
     <title>Cellevo</title>
     <link rel="icon" type="image/svg+xml" href={faviconURL}/>
     <meta name="description" content="CA, GOL">
-    <meta name="keywords" content="cellevo, celluar automata, project">
+    <meta name="keywords" content="cellevo, cellular automaton, project">
 </svelte:head>
 
 <svelte:window bind:innerWidth onresize={resizeHandler} onbeforeunload={() => snapshot.create()}/>
